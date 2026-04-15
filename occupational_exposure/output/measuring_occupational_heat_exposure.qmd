@@ -1,0 +1,10 @@
+---
+title: "Measuring Occupational Heat Exposure at the Local Level"
+author: "Sydney Jones, BSW"
+format: html
+editor: visual
+---
+
+# Measuring Workforce Occupational heat Exposure at the Hyper-Local Level
+
+Adapted from methodology outlined by Zoey Laskaris in their article "Occupational characteristics are missing from heat vulnerability indices: a study in New York and new jersey" (2005).
