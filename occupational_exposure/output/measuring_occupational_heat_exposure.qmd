@@ -1,10 +1,300 @@
 ---
 title: "Measuring Occupational Heat Exposure at the Local Level"
 author: "Sydney Jones, BSW"
-format: html
-editor: visual
+bibliography: references.bib
 ---
 
 # Measuring Workforce Occupational heat Exposure at the Hyper-Local Level
 
 Adapted from methodology outlined by Zoey Laskaris in their article "Occupational characteristics are missing from heat vulnerability indices: a study in New York and new jersey" (2005).
+
+# Setting Up R
+
+## Options
+
+```{r setup}
+options(
+  tigris_use_cache = T,
+  scipen = 999
+)
+```
+
+## Packages
+
+```{r packages}
+
+library(pacman)
+
+p_load(tidyverse, sf, tigris, tidycensus, data.table, DT, tmap, stringr, kableExtra)
+```
+
+# Pulling Data from ACS
+
+## Create Filtering Variables
+
+To filter by census tract:
+
+```{r tracts}
+
+tracts <- c("004001", "004002", "004101", "004103", "004104", "004201", "004202", "003720")
+
+```
+
+## Pulling Economic Characteristics (DP03) From ACS
+
+### Pulling Variable Labels
+
+When you initially pull the DPO3 table, the data will not include human-readable lables. We pull the variable labels separately so that we can have labels and aren't working with basic codes.
+
+We start with the labels for all profile table variables.
+
+```{r vars}
+
+vars <- load_variables(2024, "acs5/profile", cache = TRUE)
+
+```
+
+Filter for the table we are looking for, `DP03 Selected Economic Characteristics`.
+
+```{r dp03_vars}
+
+dp03_vars <- vars %>%
+  filter(grepl("^DP03", name)) %>%
+  select(name, label)
+```
+
+## Pulling Economic Characteristics Table
+
+Next, use tidycensus's `get_acs()` call to pull county-level information from `DP03`. [^1]
+
+[^1]: I've used text strings to indicate state and county, but you can also use the FIPS code, a 5-digit identifier system to signify state and county developed by the US Census Bureau. FIPS codes are made of a 2-digit number representing the state and a 3-digit number representing a county within that state, arranged in alphabetical order. (ex: PA = 42, county = 101). FIPS codes are combined with identifiers of smaller units of geography to create the GEOID of a specific place.
+
+    A list of state- and county-level FIPS codes can be found here: <https://transition.fcc.gov/oet/info/maps/census/fips/fips.txt>.
+
+    More information on geographic identifiers, including FIPS codes and others, can be found here: <https://www.census.gov/programs-surveys/geography/guidance/geo-identifiers.html>.
+
+```{r dp03}
+
+dp03 <- get_acs(
+  geography = "tract", #specifies the geographic unit of analysis
+  state = "PA", #state of interest
+  county = "Philadelphia County", #county of interest
+  year = 2024, #survey year
+  survey = "acs5", #specific survey, ACS 5-Year
+  table = "DP03", #table we are pulling
+  cache_table = T, #this caches the results so we can pull it faster next time
+  geometry = T, #tells tidycensus that we want to include polygon shapes as well for mapping later
+  progress_bar = F #this is crucial!! Keeps all the extra progress junk from printing out in report later
+) 
+
+```
+
+To make it easier to bring in our variable labels, we rename the `label` column they live under in our `dp03_vars` table to `variable` so it matches that present in our `dp03` table.
+
+```{r rename_vars}
+
+dp03_vars <- dp03_vars %>% 
+  rename(variable = name)
+
+```
+
+## Join Variable Labels to Data
+
+Perform a `left_join()` so that we have human-readable labels. A left join combines our first (left) df, `dp03`, with a new df `dp03_vars` based on values present in a column that we specify with the argument `by =` . When choosing the joining value, we want to make sure it is a unique charachteristic of the data it represents. This basically means that we want to pick something that is only present one time for each item (row) in the data.
+
+It is called a *left* join because it keeps everything from the df on the left, which in this instance we want to be our df with county-level data. Anything present in `dp03_vars` that doesn't match is left behind. There are several other join types. Left is the most common.
+
+```{r dp03_join}
+
+dp03_join <- dp03 %>% 
+  left_join(dp03_vars, by = "variable")
+
+```
+
+# Cleaning Data
+
+## Coding for Tract and Subsetting our Study Area
+
+The data we pulled doesn't have a dedicated column for the census tract code. That is ok–it lives inside of the GEOID. Subset the census tract code, which is the last six digits of the GEOID (the first five being the FIPS representing county and state) into its own column.
+
+```{r tract_column}
+
+dp03_join <- dp03_join %>% 
+  mutate(tract = str_sub(GEOID, -6))
+
+```
+
+Now we subset the data and remove only the information on the census tracts that are within our desired study area. We use the `tracts` vector we created earlier that contains the six-digit census tract codes.
+
+```{r study_dp03}
+
+study_dp03 <- dp03_join %>% 
+  filter(tract %in% tracts)
+```
+
+The data includes estimates, margins of error, and percentages. we will take only the estimates, since we will be calculating our own percentage shares later.
+
+```{r study_dp03e}
+study_dp03e <- study_dp03 %>% 
+  filter(!str_detect(variable, "P$")) #estimate percentages are denoted by a P at the end of the variable code
+```
+
+Next, we break up the weird and long `label` column into separate columns so that it is easier to read and understand what exactly each row's estimate represents. We will hold on to the original column just in case, and add the new columns with the disaggregated information.
+
+```{r separate_labels}
+study_dp03e <- study_dp03e %>% 
+  separate(
+    col = label,
+    into = c("measure", "indicator", "metric", "detail_1", "detail_2", "detail_3", "detail_4"),
+    sep = "!!",
+    remove = F
+      )
+```
+
+### Examination of Different Categories
+
+Run a few summary tables to see what the different categories within the data represent.
+
+Summarizing the `indicator` column shows us what different categories of information are included within `DP03`.
+
+```{r indicator_sum}
+
+indicator_sum <- study_dp03e %>% 
+  group_by(indicator) %>% 
+  summarise(n = n(), .groups = "drop") %>% 
+  arrange(desc(n))
+
+indicator_sum %>%
+  kbl(caption = "Count of Observations by Indicator") %>% 
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    full_width = FALSE
+  )  
+
+```
+
+\
+A summary by `metric` shows us the count of each type of measured group across the data. For example, different units of measure included are workers, population members, non-family households, and even median earning values.
+
+```{r metric_sum}
+
+ metric_sum <- study_dp03e %>% 
+   group_by(metric) %>% 
+   summarise(n = n(), .groups = "drop") %>% 
+  arrange(desc(n))
+ 
+ metric_sum %>% 
+  kbl(caption = "Count of Observations by Metric") %>% 
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    full_width = FALSE
+  )  
+
+```
+
+We can summarize by both `indicator` and `metric` to see which indicators use different units of measure.
+
+For example, when looking at income and benefits, there are 91 metrics reported related to families.
+
+```{r indicator_metric_sum}
+
+ indicator_metric_sum <- study_dp03e %>% 
+   group_by(indicator, metric) %>% 
+   summarise(n = n(), .groups = "drop") %>% 
+  arrange(indicator, desc(n))
+ 
+ 
+ indicator_metric_sum %>%
+  kbl(caption = "Count of Observations by Indicator and Metric") %>% 
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    full_width = FALSE
+  )  
+
+
+```
+
+## Subsetting by Industry/Occuation
+
+Subsetting a new df that includes sole information on industry and occupation. We also leave behind some unnecessary columns that we don't need right now. This provides us with a df of estimates for each industry and occupation by study area census tract.
+
+```{r ind_occ}
+
+ind_occ <- study_dp03e %>% 
+  filter(indicator == "INDUSTRY" | indicator == "OCCUPATION") %>% 
+   select(
+     GEOID,
+     tract,
+     indicator,
+     metric,
+     industry_occupation = detail_1,
+     estimate,
+     moe,
+     geometry
+   ) %>% #we fill in the empty cells here with a new label because they represent total laborforce within the study area
+   mutate(industry_occupation = case_when(
+     is.na(industry_occupation) ~ "TOTAL STUDY AREA LABORFORCE",
+     TRUE ~ industry_occupation
+   )) 
+```
+
+## Summarize aggregate industry and occupation estimates across the entire study area
+
+We combine the counts for all tracts within the entire study area so we can also analyze the neighborhood as a whole. During this step, we will also compute the share each industry and occupation occupies within the study area.
+
+```{r ind_sum}
+
+   ind_sum <- ind_occ %>% 
+   group_by(indicator, industry_occupation) %>% 
+   summarise(study_area_count = sum(estimate)) %>% 
+     mutate(
+       total = study_area_count[industry_occupation == "TOTAL STUDY AREA LABORFORCE"][1],
+       share_occupied = study_area_count / total,
+       .before = geometry
+     ) %>% 
+     select(-total) %>% 
+     group_by(indicator) %>% 
+     arrange(indicator, desc(share_occupied))
+```
+
+## Summarize Tract and Study Area Laborforce
+
+Next we create a table of the study area's laborforce. First, we start by analyzing employment and unemployment within each tract.
+
+```{r laborforce}
+
+ laborforce <- study_dp03e %>% 
+   filter(metric == "Civilian labor force") %>% 
+   select(
+     GEOID,
+     NAME,
+     variable,
+     indicator,
+     metric,
+     detail_1,
+     estimate,
+     moe
+     ) %>% #filter out anything that has an NA estimate
+   filter(
+     !is.na(estimate)
+   ) %>% #add a column that includes the total labor force for the entire study area
+   mutate(
+     total_laborforce = sum(estimate)
+   )
+ # %>% 
+ #   group_by(tract) %>% 
+ #   summarise(
+ #     total_employment = sum(estimate)
+ #   )
+
+```
+
+\
+\
+\
+\
+\
+
+# References
+
+[@laskaris2025]

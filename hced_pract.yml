@@ -1,0 +1,23 @@
+---
+project:
+  type: default
+  
+format:
+  html:
+    toc: true
+    toc-location: right        # floating TOC
+    toc-depth: 3
+    number-sections: true
+    code-fold: true            # collapsible code
+    code-summary: "Show code"
+    theme: litera               # clean default
+    css: styles.css  
+    anchor-sections: true # optional custom tweaks
+    df-print: paged
+execute:
+  echo: false
+  warning: false
+  message: false
+  freeze: auto
+  
+---
