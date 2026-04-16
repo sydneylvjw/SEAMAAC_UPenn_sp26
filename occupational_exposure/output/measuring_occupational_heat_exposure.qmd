@@ -2,9 +2,27 @@
 title: "Measuring Occupational Heat Exposure at the Local Level"
 author: "Sydney Jones, BSW"
 bibliography: references.bib
+format:
+  html:
+    toc: true
+    toc-location: right        # floating TOC
+    toc-depth: 3
+    number-sections: true
+    code-summary: "Click to view code"
+    theme: litera               # clean default
+    anchor-sections: true # optional custom tweaks
+    df-print: paged
+    self-contained: true
+execute:
+  echo: true
+  warning: false
+  message: false
+  freeze: auto
+  
+
 ---
 
-# Measuring Workforce Occupational heat Exposure at the Hyper-Local Level
+# Overview
 
 Adapted from methodology outlined by Zoey Laskaris in their article "Occupational characteristics are missing from heat vulnerability indices: a study in New York and new jersey" (2005).
 
@@ -36,7 +54,7 @@ To filter by census tract:
 
 ```{r tracts}
 
-tracts <- c("004001", "004002", "004101", "004103", "004104", "004201", "004202", "003720")
+tracts <- c("004001", "004002", "004101", "004103", "004104", "004201", "004202", "037200")
 
 ```
 
@@ -67,6 +85,8 @@ dp03_vars <- vars %>%
 
 Next, use tidycensus's `get_acs()` call to pull county-level information from `DP03`. [^1]
 
+In the included chunk, I pulled the stored data from my local memory, but the API call is commented out and ready to be used. 
+
 [^1]: I've used text strings to indicate state and county, but you can also use the FIPS code, a 5-digit identifier system to signify state and county developed by the US Census Bureau. FIPS codes are made of a 2-digit number representing the state and a 3-digit number representing a county within that state, arranged in alphabetical order. (ex: PA = 42, county = 101). FIPS codes are combined with identifiers of smaller units of geography to create the GEOID of a specific place.
 
     A list of state- and county-level FIPS codes can be found here: <https://transition.fcc.gov/oet/info/maps/census/fips/fips.txt>.
@@ -75,17 +95,20 @@ Next, use tidycensus's `get_acs()` call to pull county-level information from `D
 
 ```{r dp03}
 
-dp03 <- get_acs(
-  geography = "tract", #specifies the geographic unit of analysis
-  state = "PA", #state of interest
-  county = "Philadelphia County", #county of interest
-  year = 2024, #survey year
-  survey = "acs5", #specific survey, ACS 5-Year
-  table = "DP03", #table we are pulling
-  cache_table = T, #this caches the results so we can pull it faster next time
-  geometry = T, #tells tidycensus that we want to include polygon shapes as well for mapping later
-  progress_bar = F #this is crucial!! Keeps all the extra progress junk from printing out in report later
-) 
+dp03 <- readRDS(here::here("occupational_exposure/data/raw/dp03.rds"))
+
+# dp03 <- get_acs(
+#   geography = "tract", #specifies the geographic unit of analysis
+#   state = "PA", #state of interest
+#   county = "Philadelphia County", #county of interest
+#   year = 2024, #survey year
+#   survey = "acs5", #specific survey, ACS 5-Year
+#   table = "DP03", #table we are pulling
+#   cache_table = T, #this caches the results so we can pull it faster next time
+#   geometry = T, #tells tidycensus that we want to include polygon shapes as well for mapping later
+#   progress_bar = F #this is crucial!! Keeps all the extra progress junk from printing out in report later
+# ) 
+
 
 ```
 
@@ -132,14 +155,21 @@ study_dp03 <- dp03_join %>%
   filter(tract %in% tracts)
 ```
 
-The data includes estimates, margins of error, and percentages. we will take only the estimates, since we will be calculating our own percentage shares later.
+The data includes estimates, margins of error, and percentages. we will take only the estimates, since we will be calculating our own percentage shares later. We will also break up the column that names the geography.
 
 ```{r study_dp03e}
+
 study_dp03e <- study_dp03 %>% 
-  filter(!str_detect(variable, "P$")) #estimate percentages are denoted by a P at the end of the variable code
+  filter(!str_detect(variable, "P$")) %>%  #estimate percentages are denoted by a P at the end of the variable code
+  separate(
+    col = NAME,
+    into = c("tract_name", "county_name", "state_name"),
+    sep = "; ",
+    remove = T #we don't need to hold on to this since it lives in the previous df
+  )
 ```
 
-Next, we break up the weird and long `label` column into separate columns so that it is easier to read and understand what exactly each row's estimate represents. We will hold on to the original column just in case, and add the new columns with the disaggregated information.
+Next, we break up the weird and long `label` column into separate columns so that it is easier to read and understand what exactly each row's estimate represents. Similar to the previous step, we do not need to hold on to the original column since it lives in `study_dp03`.
 
 ```{r separate_labels}
 study_dp03e <- study_dp03e %>% 
@@ -147,7 +177,7 @@ study_dp03e <- study_dp03e %>%
     col = label,
     into = c("measure", "indicator", "metric", "detail_1", "detail_2", "detail_3", "detail_4"),
     sep = "!!",
-    remove = F
+    remove = T
       )
 ```
 
@@ -165,15 +195,18 @@ indicator_sum <- study_dp03e %>%
   arrange(desc(n))
 
 indicator_sum %>%
+  rename("Indicator Category" = indicator,
+         "Number of Observations" = n) %>% 
+  st_drop_geometry() %>% 
   kbl(caption = "Count of Observations by Indicator") %>% 
   kable_styling(
     bootstrap_options = c("striped", "hover", "condensed"),
     full_width = FALSE
   )  
 
+
 ```
 
-\
 A summary by `metric` shows us the count of each type of measured group across the data. For example, different units of measure included are workers, population members, non-family households, and even median earning values.
 
 ```{r metric_sum}
@@ -184,11 +217,15 @@ A summary by `metric` shows us the count of each type of measured group across t
   arrange(desc(n))
  
  metric_sum %>% 
+   rename("Observation Metric" = metric,
+          "Count of Observations by Metric" = n) %>% 
+   st_drop_geometry() %>% 
   kbl(caption = "Count of Observations by Metric") %>% 
   kable_styling(
     bootstrap_options = c("striped", "hover", "condensed"),
     full_width = FALSE
   )  
+ 
 
 ```
 
@@ -205,11 +242,15 @@ For example, when looking at income and benefits, there are 91 metrics reported 
  
  
  indicator_metric_sum %>%
-  kbl(caption = "Count of Observations by Indicator and Metric") %>% 
+   rename("Measure Indicator" = metric,
+          "Count of Observations by Indicator" = n) %>% 
+   st_drop_geometry() %>% 
+  kbl(caption = "Count of Observations by Metric") %>% 
   kable_styling(
     bootstrap_options = c("striped", "hover", "condensed"),
     full_width = FALSE
   )  
+ 
 
 
 ```
@@ -218,6 +259,8 @@ For example, when looking at income and benefits, there are 91 metrics reported 
 
 Subsetting a new df that includes sole information on industry and occupation. We also leave behind some unnecessary columns that we don't need right now. This provides us with a df of estimates for each industry and occupation by study area census tract.
 
+Many of the following operations can be modified and used to analyze any of the other indicators available by modifying the indicator used in the filter filter call.
+
 ```{r ind_occ}
 
 ind_occ <- study_dp03e %>% 
@@ -225,6 +268,7 @@ ind_occ <- study_dp03e %>%
    select(
      GEOID,
      tract,
+     tract_name,
      indicator,
      metric,
      industry_occupation = detail_1,
@@ -238,28 +282,144 @@ ind_occ <- study_dp03e %>%
    )) 
 ```
 
-## Summarize aggregate industry and occupation estimates across the entire study area
+## Summarize aggregate industry and occupation estimates 
 
-We combine the counts for all tracts within the entire study area so we can also analyze the neighborhood as a whole. During this step, we will also compute the share each industry and occupation occupies within the study area.
+Summarize the industry and occupation estimates for each census tract.
 
-```{r ind_sum}
+### Tract Level
 
-   ind_sum <- ind_occ %>% 
-   group_by(indicator, industry_occupation) %>% 
-   summarise(study_area_count = sum(estimate)) %>% 
-     mutate(
-       total = study_area_count[industry_occupation == "TOTAL STUDY AREA LABORFORCE"][1],
-       share_occupied = study_area_count / total,
-       .before = geometry
-     ) %>% 
-     select(-total) %>% 
-     group_by(indicator) %>% 
-     arrange(indicator, desc(share_occupied))
+We will clean up the `industry_occupation` column so that everything is identical – capitalized and without punctuation. We will also need to combine a couple of categories to match the computation that was done to calculate the indices.
+
+```{r ind_occ_tract}
+
+ind_occ_tract <- ind_occ %>% 
+    mutate(
+    industry_occupation = toupper(industry_occupation)
+  ) %>% 
+  mutate(
+    industry_occupation = str_remove_all(industry_occupation, "[[:punct:]]")
+  ) %>% 
+  mutate( #combine retail and arts to accommodate the measure I created
+    industry_occupation = case_when(
+      industry_occupation == "RETAIL TRADE" ~ 
+        "ARTS ENTERTAINMENT AND RECREATION AND ACCOMMODATION AND FOOD SERVICES AND RETAIL TRADE",
+      industry_occupation == "ARTS ENTERTAINMENT AND RECREATION AND ACCOMMODATION AND FOOD SERVICES" ~ "ARTS ENTERTAINMENT AND RECREATION AND ACCOMMODATION AND FOOD SERVICES AND RETAIL TRADE",
+      TRUE ~ industry_occupation
+    )
+  ) %>% 
+  filter(
+    industry_occupation != "TOTAL STUDY AREA LABORFORCE"
+    )
 ```
+
+Create estimate counts of employment by industry and occupation for each tract, and then employment for the total tract.
+
+```{r ind_occ_tract_sum}
+
+ind_occ_tract <- ind_occ_tract %>% 
+   group_by(tract_name, indicator, industry_occupation) %>% 
+   summarise(ind_occ_employment = sum(estimate)) %>% 
+  ungroup() %>% 
+  group_by(tract_name, indicator) %>% 
+     mutate(
+       total_tract_employment = sum(ind_occ_employment),
+       .before = geometry
+       ) %>% 
+  ungroup()
+
+
+```
+
+Create a column for total study area employment.
+
+```{r total_studyarea_employment}
+
+ind_occ_tract <- ind_occ_tract %>% 
+  group_by(indicator) %>% 
+  mutate(
+    total_studyarea_employment = sum(ind_occ_employment),
+    .before = geometry) %>% 
+  ungroup()
+```
+
+Make a table
+```{r tract_level_summary}
+
+ind_occ_tract %>% 
+   mutate(
+    tract_share = ind_occ_employment / total_tract_employment
+  ) %>%
+    arrange(tract_name, indicator, industry_occupation, ind_occ_employment, total_tract_employment, total_studyarea_employment, tract_share) %>% 
+  rename(
+    "Census Tract" = tract_name,
+    "Industry or Occupation" = indicator,
+    "Category" = industry_occupation,
+    "Total Employees" = ind_occ_employment,
+    "Total Employees by Tract" = total_tract_employment,
+    "Total Study Area Employees" = total_studyarea_employment,
+    "Share of Tract Employment" = tract_share
+  ) %>%
+  mutate(`Share of Tract Employment` = scales::percent(`Share of Tract Employment`, accuracy = 0.1)) %>%
+  st_drop_geometry() %>% 
+  kbl(caption = "Employment by Industry, Occupation, and Census Tract") %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    full_width = FALSE
+  ) 
+
+```
+
+### Study Area Level
+
+We then combine the counts for all tracts within the entire study area so we can also analyze the neighborhood as a whole. During this step, we will also compute the share each industry and occupation occupies within the study area.
+
+```{r ind_occ_agg}
+
+ind_occ_agg <- ind_occ %>% 
+    mutate(
+    industry_occupation = toupper(industry_occupation)
+  ) %>% 
+  mutate(
+    industry_occupation = str_remove_all(industry_occupation, "[[:punct:]]")
+  ) %>% 
+  mutate( #combine retail and arts to accommodate the measure I created
+    industry_occupation = case_when(
+      industry_occupation == "RETAIL TRADE" ~ 
+        "ARTS ENTERTAINMENT AND RECREATION AND ACCOMMODATION AND FOOD SERVICES AND RETAIL TRADE",
+      industry_occupation == "ARTS ENTERTAINMENT AND RECREATION AND ACCOMMODATION AND FOOD SERVICES" ~ "ARTS ENTERTAINMENT AND RECREATION AND ACCOMMODATION AND FOOD SERVICES AND RETAIL TRADE",
+      TRUE ~ industry_occupation
+    )
+  ) %>% 
+  filter(industry_occupation != "TOTAL STUDY AREA LABORFORCE")
+
+
+
+```
+
+Create summaries grouped by industry and occupation.
+
+```{r ind_occ_agg_sum}
+
+ind_occ_agg <- ind_occ_agg %>% 
+   group_by(indicator, industry_occupation) %>% 
+   summarise(ind_occ_employment = sum(estimate)) %>% 
+  ungroup() %>% 
+  group_by(indicator) %>% 
+     mutate(
+       total_studyarea_employment = sum(ind_occ_employment),
+       .before = geometry
+       ) %>% 
+  ungroup()
+
+```
+
+We now have two summary panels: `ind_occ_tract`, which shows us the number of employees that work in each industry and occupation category; and `ind_occ_agg` that displays employment by each sector and industry across our entire study area.
 
 ## Summarize Tract and Study Area Laborforce
 
-Next we create a table of the study area's laborforce. First, we start by analyzing employment and unemployment within each tract.
+Next we create a table of the study area's laborforce, or its entire population of employable persons over the age of 16. This shows us the total number of eligible workers in each census tract.
+
+We will rename the `estimate` and `moe` columns so that if we join this to our other data, we will know which is which.
 
 ```{r laborforce}
 
@@ -267,7 +427,7 @@ Next we create a table of the study area's laborforce. First, we start by analyz
    filter(metric == "Civilian labor force") %>% 
    select(
      GEOID,
-     NAME,
+     tract_name,
      variable,
      indicator,
      metric,
@@ -278,22 +438,305 @@ Next we create a table of the study area's laborforce. First, we start by analyz
    filter(
      !is.na(estimate)
    ) %>% #add a column that includes the total labor force for the entire study area
-   mutate(
-     total_laborforce = sum(estimate)
-   )
- # %>% 
- #   group_by(tract) %>% 
- #   summarise(
- #     total_employment = sum(estimate)
- #   )
+   group_by(tract_name, indicator, industry_occupation = metric) %>% 
+   summarise(
+     tract_laborforce = sum(estimate)
+   ) %>% 
+   ungroup() %>% 
+   group_by(indicator) %>% 
+   mutate(total_studyarea_laborforce = sum(tract_laborforce),
+          .before = geometry) %>% 
+   ungroup() %>%
+   rename(sector = industry_occupation) %>% 
+   st_drop_geometry()
+```
+
+## Join employment and laborforce data
+
+```{r emp_labor}
+
+emp_labor_tract <- ind_occ_tract %>% 
+  left_join(laborforce, by = "tract_name") %>% 
+  # reorganize columns for easier reading
+  relocate(
+    tract_laborforce, .after = total_tract_employment
+    ) %>% 
+  relocate(
+    total_studyarea_laborforce, .after = total_studyarea_employment
+  ) %>% 
+  relocate(
+    geometry, .after = last_col())
 
 ```
 
-\
-\
-\
-\
-\
+## Calculate unemployment rate and employment shares
+
+### By tract
+
+```{r tract_unemployment}
+
+emp_labor_tract <- emp_labor_tract %>% 
+  group_by(tract_name) %>% 
+  mutate(
+    tract_unemployment = 1 - (total_tract_employment / tract_laborforce)) %>% 
+  ungroup() %>% 
+  mutate(
+    studyarea_unemployment = 1 - (total_studyarea_employment / total_studyarea_laborforce),
+    tract_ind_occ_share = ind_occ_employment / total_tract_employment,
+    .before = geometry
+  )
+```
+
+### By Study Area
+
+```{r labor_force_summary}
+#create single vector so you can mutate it on to the ind_occ_agg
+laborforce_summary <- laborforce %>% 
+  select(indicator, total_studyarea_laborforce) %>% 
+  distinct()
+
+emp_labor <- ind_occ_agg %>% 
+  mutate(
+    
+  ) %>% 
+  mutate(
+    ind_occ_employment_share = ind_occ_employment / total_studyarea_employment,
+    total_studyarea_laborforce = laborforce_summary$total_studyarea_laborforce,
+         studyarea_unemployment = 1 - (total_studyarea_employment / total_studyarea_laborforce),
+         .before = geometry)
+  
+```
+
+# Importing Industry/Occupation Heat Exposure Table
+
+## Importing/Cleaning Data
+
+Importing in the aggregated heat exposures table with means calculated based on the ACS categories.
+
+```{r heat}
+
+heat <- readxl::read_xlsx(here::here(("occupational_exposure/data/silver/acs_grouping_exposure.xlsx")))
+
+```
+
+Clean data so that it can easily be matched with other dfs, remove any duplicates and categories with NAs. ONET only has exposure measures for private industry jobs, so we want to take out anything that it did not provide measures for.
+
+```{r heat_clean}
+
+heat_clean <- heat %>% 
+  mutate(
+    industry_occupation = toupper(industry_occupation)
+  ) %>% 
+  mutate(
+    industry_occupation = str_remove_all(industry_occupation, "[[:punct:]]")
+  ) %>% 
+  filter(
+  !industry_occupation %in% c("PUBLIC ADMINISTRATION", "TOTAL STUDY AREA LABORFORCE")) %>% 
+  distinct()
+
+```
+
+# Creating Indices
+
+## Calculate Average, Weighted, and Standardized Scores in `heat_clean` df
+
+Calculating different standardized exposure scores for each industry and occupation. 
+
+These measures will be assigned to each industry or occupation moving forward. 
+
+Also, removing `very_hot_very_cold` from the calculation bc it also includes extremely cold temperatures
+
+```{r calculate_indices}
+
+heat_clean <- heat_clean %>% 
+  mutate( #weighted exposure
+    weighted_exposure = (
+      0.3 * indoors_controlled +
+        0.4 * outdoors_exposed +
+        0.3 * outdoors_undercover)
+  ) %>% 
+  mutate( #average exposure
+    total_exposure = rowMeans(
+      select(., indoors_controlled, outdoors_exposed, outdoors_undercover),
+      na.rm = TRUE
+    )
+  )
+
+
+heat_clean <- heat_clean %>% 
+  # standardized average (z-score) for comparing accross occupations. SHows relative exposure and if something is above/below average
+  mutate(across(
+    c(indoors_controlled, outdoors_exposed, outdoors_undercover),
+    ~ as.numeric(scale(.x)),
+    .names = "{.col}_scaled"
+  )) %>% 
+  mutate(total_exposure_z = rowMeans(across(
+    c(indoors_controlled_scaled, outdoors_exposed_scaled, outdoors_undercover_scaled)
+  ), na.rm = TRUE)) 
+```
+
+### Subset Indices
+
+```{r indices}
+
+indices <- heat_clean %>% 
+  select(
+    industry_occupation,
+    average_exposure = total_exposure,
+    weighted_exposure,
+    total_exposure_z
+  )
+
+indices %>% 
+  select(
+    industry_occupation, total_exposure_z
+  ) %>% 
+  arrange(desc(total_exposure_z)) %>% 
+    kbl(caption = "Standardized Average Exposure Score By Industry and Occupation ACS Category") %>% 
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    full_width = FALSE
+  ) 
+```
+
+## Study Area Indices
+
+### Join `heat_clean` to `emp_labor`
+
+```{r indices_join}
+
+emp_labor <- emp_labor %>% 
+  left_join(heat_clean, by = "industry_occupation")  %>% 
+  relocate(geometry, .after = last_col()) %>% 
+  select(-code_2_digit)
+
+```
+
+### Adding Binned Variable
+
+Creating binned categories based on the ONET classification system for each of the three types of heat exposure: indoor with uncontrolled temperatures, outdoor full exposure, and outdoor undercover.
+
+```{r binned_var}
+
+emp_labor <- emp_labor %>% 
+mutate(average_score_severity = case_when(
+  total_exposure >= 75 ~ "Once a Week or More but Not Every Day",
+  total_exposure >= 50 ~ "Once a Month or More but Not Every Week",
+  total_exposure >= 25 ~ "Once a Year or More but Not Every Month",
+  total_exposure < 25 ~ "Never Exposed",
+  TRUE ~ NA_character_
+)) %>% 
+mutate(weighted_score_severity = case_when(
+  weighted_exposure >= 75 ~ "Once a Week or More but Not Every Day",
+  weighted_exposure >= 50 ~ "Once a Month or More but Not Every Week",
+  weighted_exposure >= 25 ~ "Once a Year or More but Not Every Month",
+  weighted_exposure < 25 ~ "Never Exposed",
+  TRUE ~ NA_character_
+)) %>%
+mutate(z_score_severity = case_when(
+  total_exposure_z >= 1 ~ "Extreme Exposure",
+  total_exposure_z >= 0.5 ~ "High Exposure",
+  total_exposure_z >= 0.25 ~ "Moderate Exposure",
+  total_exposure_z > 0 ~ "Average Exposure",
+  
+  total_exposure_z <= -1 ~ "Unlikely to be Exposed",
+  total_exposure_z <= -0.5 ~ "Little to No Exposure",
+  total_exposure_z <= -0.25 ~ "Limited Exposure",
+  total_exposure_z < 0 ~ "Below Average Exposure",
+  
+  TRUE ~ NA_character_
+)) %>%
+relocate(geometry, .after = last_col())
+
+
+```
+
+### Study Area Exposure Summary
+
+Summarize exposure severity across the study area by overall industry exposure and overall occupation exposure
+
+```{r}
+exposure_summary <- emp_labor %>%
+  group_by(indicator, z_score_severity) %>%
+  summarise(employment = sum(ind_occ_employment), .groups = "drop") %>%
+  mutate(share = employment / sum(employment), .before = geometry)
+```
+
+
+Repeat the process for tract-level exposure.
+
+## Tract-Level Indices
+
+### Join `heat_clean` to `emp_labor_tract`
+
+```{r tract_heat_join}
+
+emp_labor_tract <- emp_labor_tract %>% 
+  left_join(heat_clean, by = "industry_occupation")  %>% 
+  relocate(geometry, .after = last_col()) %>% 
+  select(-code_2_digit)
+
+```
+
+### Tract Binned Variable
+
+```{r tract_bins}
+emp_labor_tract <- emp_labor_tract %>% 
+mutate(average_score_severity = case_when(
+  total_exposure >= 75 ~ "Once a Week or More but Not Every Day",
+  total_exposure >= 50 ~ "Once a Month or More but Not Every Week",
+  total_exposure >= 25 ~ "Once a Year or More but Not Every Month",
+  total_exposure < 25 ~ "Never Exposed",
+  TRUE ~ NA_character_
+)) %>% 
+mutate(weighted_score_severity = case_when(
+  weighted_exposure >= 75 ~ "Once a Week or More but Not Every Day",
+  weighted_exposure >= 50 ~ "Once a Month or More but Not Every Week",
+  weighted_exposure >= 25 ~ "Once a Year or More but Not Every Month",
+  weighted_exposure < 25 ~ "Never Exposed",
+  TRUE ~ NA_character_
+)) %>%
+mutate(z_score_severity = case_when(
+  total_exposure_z >= 1 ~ "Extreme Exposure",
+  total_exposure_z >= 0.5 ~ "High Exposure",
+  total_exposure_z >= 0.25 ~ "Moderate Exposure",
+  total_exposure_z > 0 ~ "Average Exposure",
+  
+  total_exposure_z <= -1 ~ "Unlikely to be Exposed",
+  total_exposure_z <= -0.5 ~ "Little to No Exposure",
+  total_exposure_z <= -0.25 ~ "Limited Exposure",
+  total_exposure_z < 0 ~ "Below Average Exposure",
+  
+  TRUE ~ NA_character_
+)) %>%
+relocate(geometry, .after = last_col())
+
+```
+
+### Tract-Level Exposure Share
+
+Computing the total share of employees in each census tract by the severity of standardized exposure score. This score:
+1. Collapses exposure employment counts for each `z_score_severity` by taking them from the industry level into the tract level `exposure_emp` with the first summarize call
+2. Cleanly recomputes the total exposure denominator grouping by `tract_name` and them dividing by the tract sum employment `sum(exposure_emp)`
+
+It gives us the share of employed workers exposed by level of severity *per tract*. 
+
+```{r tract_exposure_dist}
+tract_exposure_dist <- emp_labor_tract %>%
+  filter(!is.na(z_score_severity)) %>% 
+  group_by(tract_name, z_score_severity) %>%
+  summarise(
+    exposure_emp = sum(ind_occ_employment, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  group_by(tract_name) %>%
+  mutate(
+    exposure_share = exposure_emp / sum(exposure_emp, na.rm = TRUE)
+  ) %>% 
+  relocate(geometry, .after = last_col())
+```
+
+
 
 # References
 

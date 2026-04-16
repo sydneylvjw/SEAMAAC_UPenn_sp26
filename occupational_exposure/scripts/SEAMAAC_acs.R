@@ -7,7 +7,7 @@ options(
 )
 ## Install packages ----
 library(pacman)
-p_load(tidyverse, sf, tigris, tidycensus, data.table, DT, tmap, stringr)
+p_load(tidyverse, sf, tigris, tidycensus, data.table, DT, tmap, stringr, here)
 
 
 # PULL DATA ----
@@ -379,77 +379,77 @@ exposure_indices <- heat_clean %>%
   select(industry_occupation, total_exposure, weighted_exposure, z_score = total_exposure_z)
 
 # Rebuilding basic ind_occ table with indices ----
-## rebuild ind_occ from study area dp03----
-# Filtering out data on study area industry/occupation breakdown. Removing percentages because they are at the tract level. 
-ind_occ_new <- study_dp03e %>% 
-  filter(indicator == "INDUSTRY" | indicator == "OCCUPATION",
-         !str_detect(variable, "P$")) %>% 
-  select(
-    GEOID,
-    tract,
-    indicator,
-    metric,
-    industry_occupation = detail_1,
-    estimate,
-    moe,
-    geometry
-  ) %>% 
-  mutate(industry_occupation = case_when(
-    is.na(industry_occupation) ~ "TOTAL STUDY AREA EMPLOYMENT",
-    TRUE ~ industry_occupation
-  )) 
-
-
-## summarizing across study area----
-# Creating a summary of aggregate industry/occupation employment with shares across the entire study area. 
-ind_sum_new <- ind_occ_new %>% 
-  mutate( #combine retail and arts to accommodate the measure I created
-    industry_occupation = case_when(
-      industry_occupation == "RETAIL TRADE" ~ 
-        "ARTS ENTERTAINMENT AND RECREATION AND ACCOMMODATION AND FOOD SERVICES AND RETAIL TRADE",
-      industry_occupation == "ARTS ENTERTAINMENT AND RECREATION AND ACCOMMODATION AND FOOD SERVICES" ~ "ARTS ENTERTAINMENT AND RECREATION AND ACCOMMODATION AND FOOD SERVICES AND RETAIL TRADE",
-      TRUE ~ industry_occupation
-    )
-  ) 
-
-agg_ind_sum_new <- ind_sum_new %>% 
-  group_by(indicator, industry_occupation) %>% 
-  summarise(study_area_count = sum(estimate)) %>% 
-  mutate(
-    total = study_area_count[industry_occupation == "TOTAL STUDY AREA EMPLOYMENT"][1],
-    share_occupied = study_area_count / total,
-    .before = geometry
-  ) %>% 
-  select(-total) %>% 
-  group_by(indicator) %>% 
-  arrange(indicator, desc(share_occupied))
-
-## Cleaning up labels ----
-
-ind_occ_new <- ind_occ_new %>% 
-  mutate(
-    industry_occupation = toupper(industry_occupation)
-  ) %>% 
-  mutate(
-    industry_occupation = str_remove_all(industry_occupation, "[[:punct:]]")
-  )
-
-
-ind_sum_new <- ind_sum_new %>% 
-  mutate(
-    industry_occupation = toupper(industry_occupation)
-  ) %>% 
-  mutate(
-    industry_occupation = str_remove_all(industry_occupation, "[[:punct:]]")
-  )
-
-exposure_indices <- exposure_indices %>% 
-  mutate(
-    industry_occupation = toupper(industry_occupation)
-  ) %>% 
-  mutate(
-    industry_occupation = str_remove_all(industry_occupation, "[[:punct:]]")
-  )
+# ## rebuild ind_occ from study area dp03----
+# # Filtering out data on study area industry/occupation breakdown. Removing percentages because they are at the tract level. 
+# ind_occ_new <- study_dp03e %>% 
+#   filter(indicator == "INDUSTRY" | indicator == "OCCUPATION",
+#          !str_detect(variable, "P$")) %>% 
+#   select(
+#     GEOID,
+#     tract,
+#     indicator,
+#     metric,
+#     industry_occupation = detail_1,
+#     estimate,
+#     moe,
+#     geometry
+#   ) %>% 
+#   mutate(industry_occupation = case_when(
+#     is.na(industry_occupation) ~ "TOTAL STUDY AREA EMPLOYMENT",
+#     TRUE ~ industry_occupation
+#   )) 
+# 
+# 
+# ## summarizing across study area----
+# # Creating a summary of aggregate industry/occupation employment with shares across the entire study area. 
+# ind_sum_new <- ind_occ_new %>% 
+#   mutate( #combine retail and arts to accommodate the measure I created
+#     industry_occupation = case_when(
+#       industry_occupation == "RETAIL TRADE" ~ 
+#         "ARTS ENTERTAINMENT AND RECREATION AND ACCOMMODATION AND FOOD SERVICES AND RETAIL TRADE",
+#       industry_occupation == "ARTS ENTERTAINMENT AND RECREATION AND ACCOMMODATION AND FOOD SERVICES" ~ "ARTS ENTERTAINMENT AND RECREATION AND ACCOMMODATION AND FOOD SERVICES AND RETAIL TRADE",
+#       TRUE ~ industry_occupation
+#     )
+#   ) 
+# 
+# agg_ind_sum_new <- ind_sum_new %>% 
+#   group_by(indicator, industry_occupation) %>% 
+#   summarise(study_area_count = sum(estimate)) %>% 
+#   mutate(
+#     total = study_area_count[industry_occupation == "TOTAL STUDY AREA EMPLOYMENT"][1],
+#     share_occupied = study_area_count / total,
+#     .before = geometry
+#   ) %>% 
+#   select(-total) %>% 
+#   group_by(indicator) %>% 
+#   arrange(indicator, desc(share_occupied))
+# 
+# ## Cleaning up labels ----
+# 
+# ind_occ_new <- ind_occ_new %>% 
+#   mutate(
+#     industry_occupation = toupper(industry_occupation)
+#   ) %>% 
+#   mutate(
+#     industry_occupation = str_remove_all(industry_occupation, "[[:punct:]]")
+#   )
+# 
+# 
+# ind_sum_new <- ind_sum_new %>% 
+#   mutate(
+#     industry_occupation = toupper(industry_occupation)
+#   ) %>% 
+#   mutate(
+#     industry_occupation = str_remove_all(industry_occupation, "[[:punct:]]")
+#   )
+# 
+# exposure_indices <- exposure_indices %>% 
+#   mutate(
+#     industry_occupation = toupper(industry_occupation)
+#   ) %>% 
+#   mutate(
+#     industry_occupation = str_remove_all(industry_occupation, "[[:punct:]]")
+#   )
 
 ## Tract-level exposure----
 
@@ -602,3 +602,17 @@ threshold_exposure_clean %>%
   # #             mutate(
   # #           share = severity_employees/total_industry_employees, .before = geometry) %>% 
   # # ungroup()
+# Write out files----
+
+st_write(tract_exposure_dist, "occupational_exposure/output/tract_exposure_share.gpkg", delete_dsn = T)
+
+st_write(exposure_summary, "occupational_exposure/output/study_area_exposure_summary.gpkg", delete_dsn = T)
+
+write_csv(heat_clean, "occupational_exposure/output/heat_exposure_by_indocc.csv")
+
+write_csv(emp_labor, "occupational_exposure/output/study_area_indocc.csv")
+
+emp_labor_tract <- emp_labor_tract %>% 
+  relocate(geometry, .after = last_col())
+
+st_write(emp_labor_tract, "occupational_exposure/output/tract_industry_exposure.gpkg", delete_dsn = T)
