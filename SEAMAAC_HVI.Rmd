@@ -1,0 +1,977 @@
+---
+title: "SEAMAAC Heat Vulnerability Index"
+subtitle: "An Expanded Small-Area HVI for South Philadelphia"
+author: "Prepared for SEAMAAC by the Weitzman School of Design's Spring 2026 Planning HCED Practicum (and Claude)"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  html_document:
+    theme: flatly
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    df_print: paged
+    code_folding: show
+    enclosed: true
+    css: "styles.css"
+---
+
+```{=html}
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Exo+2:ital,wght@0,400;0,600;0,700&family=Open+Sans:wght@400;600;700&display=swap');
+  body, p, li, td, th { font-family: 'Open Sans', sans-serif; font-size: 15px; color: #2b2b2b; }
+  h1, h2, h3, h4, h5, h6 { font-family: 'Exo 2', sans-serif; font-weight: 700; color: #1f3b57; }
+  h1.title { font-size: 30px; }
+  .callout {
+    background-color: #f5f7fa;
+    border-left: 5px solid #4a7ca0;
+    padding: 12px 16px;
+    margin: 14px 0;
+    border-radius: 4px;
+    font-size: 14px;
+  }
+  .callout-title { font-family: 'Exo 2', sans-serif; font-weight: 700; color: #1f3b57; margin-bottom: 4px; }
+  table { font-family: 'Open Sans', sans-serif; }
+  caption { font-family: 'Exo 2', sans-serif; font-weight: 600; color: #1f3b57; }
+</style>
+```
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  echo    = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width  = 9,
+  fig.height = 7,
+  dpi     = 150
+)
+
+options(scipen = 999)
+```
+
+# About this document
+
+This report builds a **Heat Vulnerability Index (HVI)** for a small group of census tracts in South Philadelphia served by SEAMAAC. It extends the existing city-wide Philadelphia HVI by adding language-access and housing-quality indicators that are especially relevant to immigrant and refugee communities.
+
+Every number and map in this document is generated directly from the code below — nothing is pasted in by hand. The index is fully reproducible: a collaborator can clone the file, change the study area or variable list in the **Configuration** chunk at the top, and re-knit the document to produce a new index with all tables and maps refreshed automatically.
+
+:::: callout
+::: callout-title
+What is an HVI?
+:::
+
+A Heat Vulnerability Index is a score we give to a neighborhood that tells us how much harm residents are likely to experience during extreme heat. Scores are built from things we can measure — like poverty rates, housing quality, or how many people speak limited English. Higher scores mean more vulnerability.
+::::
+
+------------------------------------------------------------------------
+
+# 1. Configuration
+
+Everything you can change about the analysis lives here. **Do not hand-edit anything downstream.**
+
+```{r config}
+# ---------------------------------------------------------------------------
+# Study area
+# ---------------------------------------------------------------------------
+study_area <- list(
+  state       = "PA",
+  county      = "Philadelphia County",
+  acs_year    = 2024,
+  acs_survey  = "acs5",
+  # Last 6 digits of GEOID for each tract in the study area
+  tract_codes = c("004001", "004002", "004101", "004103",
+                  "004104", "004201", "004202", "037200")
+)
+
+# ---------------------------------------------------------------------------
+# Color palette (used for every map and accent element)
+# Change any hex code here and it propagates everywhere.
+# ---------------------------------------------------------------------------
+pal <- list(
+  navy       = "#1f3b57",  # headings, strong accents
+  steel      = "#4a7ca0",  # primary accent
+  sage       = "#7aa88c",  # secondary accent, low-vulnerability fill
+  sand       = "#e7d9b8",  # neutral background, mid-scale
+  coral      = "#d97757",  # warning / mid-high vulnerability
+  rust       = "#a83c2b"   # highest vulnerability
+)
+
+# Ordered gradient for choropleth scales (low -> high vulnerability)
+hvi_gradient <- c(pal$sage, pal$sand, pal$coral, pal$rust)
+
+# ---------------------------------------------------------------------------
+# Index weighting — how much each sub-index contributes to the final HVI
+# Housing & Economic PCA and Language Access PCA combine using these weights.
+# Weights are normalized internally, so any positive numbers will work.
+# ---------------------------------------------------------------------------
+subindex_weights <- c(housing_econ = 0.5, language = 0.5)
+
+# ---------------------------------------------------------------------------
+# Variable specification
+#
+# Each entry defines ONE variable used in the index.
+#
+# Columns:
+#   friendly_name   — the name used in code and tables
+#   acs_numerator   — ACS variable code for the numerator (or the variable
+#                     itself if it's already a rate / median)
+#   acs_denominator — ACS variable code for the denominator. Use NA if the
+#                     variable is already a rate, percentage, or median.
+#   transform       — "none", "log", or "rate" ("rate" means num/denom)
+#   direction       — +1 if HIGHER value means MORE vulnerable
+#                     -1 if HIGHER value means LESS vulnerable
+#   domain          — "housing_econ" or "language"
+#   label           — human-readable label for tables
+#
+# To ADD a variable: append a row.
+# To REMOVE a variable: delete or comment out its row.
+# Nothing else needs to change.
+# ---------------------------------------------------------------------------
+var_spec <- tibble::tribble(
+  ~friendly_name,            ~acs_numerator,                              ~acs_denominator, ~transform, ~direction, ~domain,        ~label,
+  # --- Housing & Economic (8 core indicators) ---
+  "med_value",               "B25107_001",                                NA_character_,    "none",      -1,        "housing_econ", "Median home value ($)",
+  "med_hh_income",           "B19013_001",                                NA_character_,    "log",       -1,        "housing_econ", "Median household income (log $)",
+  "pct_severely_burdened",   "B25070_010",                                "B25070_001",     "rate",      +1,        "housing_econ", "% renters paying 50%+ of income on rent",
+  "pct_owner_occupied",      "B25003_002",                                "B25003_001",     "rate",      -1,        "housing_econ", "% owner-occupied households",
+  "pct_poverty_below",       "B16009_002",                                "B16009_001",     "rate",      +1,        "housing_econ", "% below poverty (age 5+)",
+  "pct_overcrowded",         "B25014_005,B25014_006,B25014_011,B25014_012","B25014_001",    "rate",      +1,        "housing_econ", "% households with >1 occupant per room",
+  "pct_substandard_housing", "B25047_003,B25051_003",                     "B25002_001",     "rate",      +1,        "housing_econ", "% units lacking complete plumbing or kitchen",
+  "pct_recent_movers",       "B25038_003,B25038_010",                     "B25038_001",     "rate",      +1,        "housing_econ", "% households moved in within last 4 years",
+  # --- Language / Social (2 indicators; LEP added automatically below) ---
+  "pct_ling_isolated",       "B16002_004,B16002_007,B16002_010,B16002_013","B16002_001",    "rate",      +1,        "language",     "% linguistically isolated households"
+)
+
+# LEP (B16004) — the table has many cells. We identify them programmatically
+# below so we don't have to list each one by hand.
+use_lep <- TRUE
+```
+
+:::: callout
+::: callout-title
+How the spec works
+:::
+
+The `var_spec` table is the single source of truth. Each row describes one variable: where to get it from the Census (`acs_numerator`, `acs_denominator`), how to transform it (`rate`, `log`, or `none`), and — most importantly — whether a higher value means a neighborhood is **more** or **less** vulnerable (`direction`). Everything after this is automatic.
+::::
+
+------------------------------------------------------------------------
+
+# 2. Libraries and helpers
+
+```{r libraries}
+suppressPackageStartupMessages({
+  library(tidycensus)
+  library(tidyverse)
+  library(sf)
+  library(knitr)
+  library(kableExtra)
+  library(scales)
+  library(showtext)
+})
+
+font_add_google("Exo 2",     "Exo 2")
+font_add_google("Open Sans", "Open Sans")
+showtext_auto()
+showtext_opts(dpi = 150)
+
+# Helper: safely convert columns that might be character (ACS suppression codes
+# like "N", "-", "(X)", "**") to numeric.
+safe_numeric <- function(x) suppressWarnings(as.numeric(as.character(x)))
+
+# ---------------------------------------------------------------------------
+# Table styling helpers
+# ---------------------------------------------------------------------------
+
+# Wrap a numeric score (0-100) in a color-coded HTML cell that matches the map
+# gradient. Automatically picks white or dark text depending on background.
+score_cell <- function(x, lo = min(x, na.rm = TRUE), hi = max(x, na.rm = TRUE)) {
+  pal_fn <- scales::col_numeric(
+    palette = c("#7aa88c", "#e7d9b8", "#d97757", "#a83c2b"),
+    domain  = c(lo, hi)
+  )
+  vapply(x, function(v) {
+    if (is.na(v)) return(as.character(NA))
+    bg  <- pal_fn(v)
+    txt <- if (v > 55) "white" else "#2b2b2b"
+    wt  <- if (v >= 75) "bold" else "normal"
+    kableExtra::cell_spec(
+      round(v, 1),
+      background = bg, color = txt, bold = (v >= 75),
+      extra_css  = paste0("font-weight:", wt, "; padding: 4px 10px;")
+    )
+  }, character(1))
+}
+
+# Standard table wrapper: navy header, clean alternating rows, Exo 2 headings.
+# Uses kableExtra::kbl() (not knitr::kable()) so that escape = FALSE reliably
+# renders HTML from score_cell() as actual colored spans, not escaped text.
+hvi_kable <- function(df, caption, escape = FALSE, full_width = FALSE, ...) {
+  df |>
+    kableExtra::kbl(caption = caption, escape = escape, align = "l",
+                    format = "html", ...) |>
+    kableExtra::kable_styling(
+      bootstrap_options = c("hover", "condensed"),
+      full_width  = full_width,
+      font_size   = 13
+    ) |>
+    kableExtra::row_spec(
+      0,
+      bold       = TRUE,
+      color      = "white",
+      background = "#1f3b57",
+      extra_css  = "font-family: 'Exo 2', sans-serif; font-size: 13px; letter-spacing: 0.03em;"
+    )
+}
+```
+
+------------------------------------------------------------------------
+
+# 3. Pull ACS data
+
+```{r pull-acs}
+# Build a named vector of every ACS variable we need (numerators + denominators).
+# Numerator field can hold a single ACS code OR a comma-separated list of codes
+# to be summed (e.g. "B25014_005,B25014_006,B25014_011,B25014_012" for total
+# overcrowded households across owner and renter cells).
+acs_vars <- var_spec |>
+  select(acs_numerator, acs_denominator) |>
+  pivot_longer(everything(), values_to = "acs_code") |>
+  filter(!is.na(acs_code)) |>
+  pull(acs_code) |>
+  strsplit(",") |>
+  unlist() |>
+  trimws() |>
+  unique()
+
+# Add LEP (B16004) cells for "speaks English less than very well" automatically.
+if (use_lep) {
+  b16004_vars <- load_variables(study_area$acs_year, study_area$acs_survey,
+                                cache = FALSE) |>
+    filter(str_detect(name, "^B16004_"))
+
+  # --- Tier 1: look for aggregate "less than very well" rows.
+  # The label format changed across ACS vintages; allow for curly/straight
+  # quotes and extra whitespace between "less than" and "very well".
+  lep_table <- b16004_vars |>
+    filter(str_detect(
+      label,
+      regex("less.{0,5}than.{0,15}very.{0,5}well", ignore_case = TRUE)
+    ))
+
+  # --- Tier 2: if no aggregate rows found, use "not well" + "not at all" rows.
+  # These are the two clearest LEP sub-categories. The "well" stratum is
+  # technically LEP too but is harder to isolate without the aggregate row, so
+  # we skip it in this fallback (slight undercount, acceptable for a small-area
+  # index like this one).
+  if (nrow(lep_table) == 0) {
+    message("B16004: no 'less than very well' aggregate rows found — ",
+            "falling back to 'not well' and 'not at all' detail rows (slight LEP undercount).")
+    lep_table <- b16004_vars |>
+      filter(str_detect(label, regex("\\bnot well\\b|not at all", ignore_case = TRUE)))
+  }
+
+  # --- Tier 3: if still empty, print diagnostics and skip LEP gracefully.
+  if (nrow(lep_table) == 0) {
+    warning("Could not identify LEP cells in B16004 for the ",
+            study_area$acs_year, " ", study_area$acs_survey, " release. ",
+            "Skipping LEP. First 10 B16004 labels:\n",
+            paste(head(b16004_vars$label, 10), collapse = "\n"))
+    lep_codes <- character(0)
+  } else {
+    lep_codes <- lep_table$name
+    message("LEP: matched ", length(lep_codes), " B16004 cells.")
+  }
+
+  lep_universe <- "B16004_001"
+  acs_vars     <- unique(c(acs_vars, lep_codes, lep_universe))
+}
+
+# Pull from the Census API. `geometry = TRUE` returns tract polygons.
+raw_acs <- get_acs(
+  geography = "tract",
+  state     = study_area$state,
+  county    = study_area$county,
+  year      = study_area$acs_year,
+  survey    = study_area$acs_survey,
+  variables = acs_vars,
+  geometry  = TRUE,
+  cache_table = TRUE
+)
+
+# Filter to the study area tracts only.
+seamaac <- raw_acs |>
+  mutate(tract_code = str_sub(GEOID, -6)) |>
+  filter(tract_code %in% study_area$tract_codes)
+```
+
+------------------------------------------------------------------------
+
+# 4. Reshape long → wide
+
+ACS data arrives in long format (one row per tract × variable). We spread it so each row is one tract and each column is one variable.
+
+:::: callout
+::: callout-title
+Long vs. wide data
+:::
+
+"Long" means stacked — each row is one measurement. "Wide" means flat — each row is a whole neighborhood with all its measurements side-by-side. PCA needs the wide shape.
+::::
+
+```{r reshape-wide}
+seamaac_wide <- seamaac |>
+  st_drop_geometry() |>
+  select(GEOID, NAME, tract_code, variable, estimate) |>
+  pivot_wider(names_from = variable, values_from = estimate)
+
+# Keep the tract geometry separately so we can rejoin it for mapping later.
+tract_geom <- seamaac |>
+  select(GEOID) |>
+  distinct(GEOID, .keep_all = TRUE)
+```
+
+------------------------------------------------------------------------
+
+# 5. Build derived variables (fully automatic)
+
+This loop walks through `var_spec` and constructs every variable — no hardcoded formulas.
+
+```{r build-derived}
+# Start with GEOID + tract identifiers
+derived <- seamaac_wide |>
+  select(GEOID, NAME, tract_code) |>
+  mutate(tract_short = str_remove(NAME, ";.*$"))
+
+# Helper: pull a numeric column out of seamaac_wide by its ACS code.
+get_col <- function(df, code) {
+  if (is.na(code) || !(code %in% names(df))) return(rep(NA_real_, nrow(df)))
+  safe_numeric(df[[code]])
+}
+
+# Helper: sum one or more ACS codes (comma-separated numerator field).
+sum_cols <- function(df, codes_str) {
+  if (is.na(codes_str)) return(rep(NA_real_, nrow(df)))
+  codes <- trimws(strsplit(codes_str, ",")[[1]])
+  mat   <- vapply(codes, function(c) get_col(df, c),
+                  numeric(nrow(df)))
+  if (is.null(dim(mat))) mat <- matrix(mat, ncol = 1)
+  rowSums(mat, na.rm = TRUE)
+}
+
+# Build each variable from the spec.
+for (i in seq_len(nrow(var_spec))) {
+  row  <- var_spec[i, ]
+  fn   <- row$friendly_name
+  num  <- sum_cols(seamaac_wide, row$acs_numerator)
+  den  <- if (!is.na(row$acs_denominator))
+            sum_cols(seamaac_wide, row$acs_denominator) else NULL
+
+  val <- switch(row$transform,
+    "rate" = ifelse(!is.null(den) & !is.na(den) & den > 0, num / den, NA_real_),
+    "log"  = ifelse(num > 0, log(num), NA_real_),
+    "none" = num
+  )
+  derived[[fn]] <- val
+}
+
+# LEP rate — summed across all "less than very well" cells / total pop 5+
+if (use_lep) {
+  # Pull each LEP cell as its own column, then bind into a matrix.
+  # vapply guarantees a numeric matrix even when there's only one code.
+  lep_codes_present <- intersect(lep_codes, names(seamaac_wide))
+
+  if (length(lep_codes_present) >= 1) {
+    lep_mat <- vapply(lep_codes_present,
+                      function(c) get_col(seamaac_wide, c),
+                      numeric(nrow(seamaac_wide)))
+    # vapply with a length-N output returns an N x K matrix when K >= 2,
+    # but a length-N vector when K == 1. Force a matrix either way.
+    if (is.null(dim(lep_mat))) lep_mat <- matrix(lep_mat, ncol = 1)
+
+    lep_sum   <- rowSums(lep_mat, na.rm = TRUE)
+    lep_total <- get_col(seamaac_wide, lep_universe)
+
+    derived$pct_lep <- ifelse(!is.na(lep_total) & lep_total > 0,
+                              lep_sum / lep_total, NA_real_)
+
+    # Add LEP to the spec so it flows through the rest of the pipeline.
+    var_spec <- bind_rows(var_spec, tibble(
+      friendly_name   = "pct_lep",
+      acs_numerator   = "B16004 (summed)",
+      acs_denominator = "B16004_001",
+      transform       = "rate",
+      direction       = +1,
+      domain          = "language",
+      label           = "% population 5+ LEP"
+    ))
+  } else {
+    message("No B16004 'less than very well' cells found in the data; skipping LEP.")
+  }
+}
+
+derived
+```
+
+------------------------------------------------------------------------
+
+# 6. Data validation (automatic)
+
+We drop any variable that:
+
+1.  Has **zero variance** (same value for every tract — can't contribute to PCA).
+2.  Has **too many missing values** (more than half the tracts).
+
+Anything dropped is reported so nothing is hidden.
+
+```{r validate}
+pca_candidates <- var_spec$friendly_name
+
+var_check <- tibble(
+  variable = pca_candidates,
+  n_missing = sapply(pca_candidates,
+                     function(v) sum(is.na(derived[[v]]))),
+  variance  = sapply(pca_candidates,
+                     function(v) {
+                       x <- derived[[v]]
+                       if (all(is.na(x))) return(NA_real_)
+                       stats::var(x, na.rm = TRUE)
+                     })
+)
+
+# Flag problems
+var_check <- var_check |>
+  mutate(
+    status = case_when(
+      is.na(variance)          ~ "dropped: all missing",
+      variance == 0            ~ "dropped: zero variance",
+      n_missing > nrow(derived)/2 ~ "dropped: too many missing",
+      TRUE                     ~ "kept"
+    )
+  )
+
+dropped_vars <- var_check |> filter(status != "kept") |> pull(variable)
+kept_vars    <- var_check |> filter(status == "kept") |> pull(variable)
+
+var_check |>
+  mutate(
+    variance  = round(variance, 4),
+    status    = cell_spec(
+      status,
+      color = case_when(
+        status == "kept"               ~ "#1f3b57",
+        str_detect(status, "dropped") ~ "#a83c2b",
+        TRUE                          ~ "#2b2b2b"
+      ),
+      bold = status == "kept"
+    )
+  ) |>
+  hvi_kable("Table 1 — Variable health check", escape = FALSE)
+```
+
+:::: callout
+::: callout-title
+Why this matters
+:::
+
+PCA breaks when a variable has the same value for every neighborhood (there's nothing to compare) or when most of the data is missing. Dropping those variables automatically keeps the math clean — and it's transparent, because Table 1 shows exactly what was removed and why.
+::::
+
+```{r filter-kept}
+# Subset to kept variables
+active_spec <- var_spec |> filter(friendly_name %in% kept_vars)
+
+# For PCA we need complete cases. Impute remaining NAs with the column median.
+pca_input <- derived |>
+  select(GEOID, NAME, tract_short, tract_code, all_of(kept_vars)) |>
+  mutate(across(all_of(kept_vars),
+                ~ ifelse(is.na(.x), median(.x, na.rm = TRUE), .x)))
+```
+
+------------------------------------------------------------------------
+
+# 7. Two separate PCAs
+
+The index is built in two stages, because housing/economic stress and language access measure different things.
+
+:::: callout
+::: callout-title
+What PCA does
+:::
+
+Principal Component Analysis finds the direction in the data where neighborhoods differ from each other the most. The first principal component (PC1) is that biggest-difference axis. PC2 is the next biggest, and so on. Each PC is a weighted mix of the original variables.
+::::
+
+```{r run-pcas}
+# ---- Helper: run a PCA on a subset of variables, orient signs automatically.
+# Gracefully handles single-variable domains by returning a direction-flipped
+# z-score in the shape of a PCA result, so the rest of the pipeline works the
+# same way whether a domain has 1 variable or 15.
+run_oriented_pca <- function(pca_input, spec_subset) {
+  vars <- spec_subset$friendly_name
+  if (length(vars) == 0) return(NULL)
+
+  X        <- pca_input |> select(all_of(vars)) |> as.matrix()
+  X_scaled <- scale(X)
+  direction <- spec_subset$direction[match(vars, spec_subset$friendly_name)]
+
+  # ---- Single-variable domain: return direction-flipped z-score as the score.
+  if (length(vars) == 1) {
+    s <- as.numeric(X_scaled) * direction
+    rot <- matrix(direction, nrow = 1, ncol = 1,
+                  dimnames = list(vars, "PC1"))
+    return(list(
+      pca      = list(rotation = rot, x = matrix(s, ncol = 1,
+                                                 dimnames = list(NULL, "PC1"))),
+      scores   = data.frame(PC1 = s),
+      variance = c(PC1 = 1.0),
+      proxy    = s
+    ))
+  }
+
+  # ---- Multi-variable domain: run PCA and auto-orient each PC.
+  pca <- prcomp(X_scaled, center = FALSE, scale. = FALSE)
+
+  # Theoretical vulnerability proxy: sum of z-scores weighted by each
+  # variable's direction (+1 = higher is worse; -1 = higher is better). This setup forces the direction into an explicit kx1 matrix regardless of how it came out of the tibble subset. 
+  proxy <- as.numeric(X_scaled %*% matrix(direction, ncol = 1))
+
+  # For every PC, flip its sign so that it correlates positively with the
+  # proxy. That way higher PC score = more vulnerable, automatically.
+  scores <- pca$x
+  for (k in seq_len(ncol(scores))) {
+    r <- suppressWarnings(stats::cor(scores[, k], proxy))
+    if (!is.na(r) && r < 0) {
+      scores[, k]        <- -scores[, k]
+      pca$rotation[, k]  <- -pca$rotation[, k]
+    }
+  }
+
+  list(
+    pca      = pca,
+    scores   = as.data.frame(scores),
+    variance = summary(pca)$importance["Proportion of Variance", ],
+    proxy    = proxy
+  )
+}
+
+# Housing & Economic PCA
+he_spec <- active_spec |> filter(domain == "housing_econ")
+he_out  <- run_oriented_pca(pca_input, he_spec)
+
+# Language PCA
+lang_spec <- active_spec |> filter(domain == "language")
+lang_out  <- run_oriented_pca(pca_input, lang_spec)
+```
+
+:::: callout
+::: callout-title
+How we decide which direction is "more vulnerable"
+:::
+
+We don't eyeball the PCA output. Instead, every variable in the spec carries a `direction` flag (+1 if higher = more vulnerable, −1 if higher = less vulnerable). The code builds a theory-based "vulnerability proxy" from those flags, and for each PC it checks whether the PC's scores move *with* the proxy or against it. If the PC moves against the proxy, we flip its sign. This runs automatically — there is no place in the document where anyone has to set a sign by hand.
+::::
+
+------------------------------------------------------------------------
+
+# 8. Sub-index and final HVI construction
+
+```{r build-composite}
+# Weighted PC score for a sub-index. Uses enough PCs to cover `var_threshold`
+# of the total variance, or all of them if there are fewer.
+weighted_pc_score <- function(out, var_threshold = 0.80) {
+  if (is.null(out)) return(NULL)
+  cumv <- cumsum(out$variance)
+  k    <- max(1, which(cumv >= var_threshold)[1])
+  if (is.na(k)) k <- length(out$variance)
+  wts  <- out$variance[1:k]
+  wts  <- wts / sum(wts)
+  s    <- as.matrix(out$scores[, 1:k, drop = FALSE]) %*% wts
+  as.numeric(s)
+}
+
+
+# Construct raw and 0–100 sub-index scores
+he_raw   <- weighted_pc_score(he_out)
+lang_raw <- weighted_pc_score(lang_out)
+
+# Normalize subindex_weights so they sum to 1
+w <- subindex_weights / sum(subindex_weights)
+
+scores <- pca_input |>
+  select(GEOID, NAME, tract_short, tract_code) |>
+  mutate(
+    housing_econ_score = if (!is.null(he_raw))   he_raw   else NA_real_,
+language_score     = if (!is.null(lang_raw)) lang_raw else NA_real_)|>
+  mutate(
+    # Final HVI is the weighted average of the two 0-100 sub-indices.
+    # We deliberately do NOT rescale the final score to 0-100 again — that
+    # rescale forces the highest tract to 100 even if it isn't extreme on
+    # both sub-indices, which makes the final map look identical to whichever
+    # sub-index dominates. Leaving it as a true weighted average preserves
+    # the contribution of each sub-index.
+    hvi_score = case_when(
+      !is.na(housing_econ_score) & !is.na(language_score) ~
+        housing_econ_score * w["housing_econ"] + language_score * w["language"],
+      !is.na(housing_econ_score) ~ housing_econ_score,
+      !is.na(language_score)     ~ language_score,
+      TRUE ~ NA_real_
+    )
+  ) |>
+  # Determine which sub-index dominates each tract for the analysis section.
+  mutate(
+    dominant_subindex = case_when(
+      is.na(housing_econ_score) | is.na(language_score) ~ NA_character_,
+      housing_econ_score - language_score >  10 ~ "housing/economic",
+      language_score - housing_econ_score >  10 ~ "language access",
+      TRUE                                       ~ "balanced"
+    ),
+    hvi_rank = rank(-hvi_score, ties.method = "min")
+  ) |>
+  arrange(desc(hvi_score))
+```
+
+------------------------------------------------------------------------
+
+# 9. Results
+
+## Table 2 — Variance explained by each PCA
+
+```{r tbl-variance}
+bind_rows(
+  if (!is.null(he_out))   tibble(component = names(he_out$variance),
+                                 domain    = "Housing & Economic",
+                                 prop_var  = he_out$variance) else NULL,
+  if (!is.null(lang_out)) tibble(component = names(lang_out$variance),
+                                 domain    = "Language Access",
+                                 prop_var  = lang_out$variance) else NULL
+) |>
+  mutate(`Variance explained` = percent(prop_var, accuracy = 0.1)) |>
+  select(Domain = domain, Component = component, `Variance explained`) |>
+  hvi_kable("Table 2 — How much each principal component explains")
+```
+
+## Table 3 — Variable loadings on PC1 of each PCA
+
+```{r tbl-loadings}
+make_loading_tbl <- function(out, spec_subset, domain_label) {
+  if (is.null(out)) return(NULL)
+  rot <- out$pca$rotation
+  ncp <- min(3, ncol(rot))
+  as.data.frame(rot[, 1:ncp, drop = FALSE]) |>
+    tibble::rownames_to_column("friendly_name") |>
+    left_join(spec_subset |> select(friendly_name, label, direction),
+              by = "friendly_name") |>
+    mutate(
+      Direction = ifelse(direction == 1, "higher = more vulnerable",
+                                         "higher = less vulnerable"),
+      Domain    = domain_label
+    ) |>
+    select(Domain, Variable = label, Direction, everything(),
+           -friendly_name, -direction) |>
+    arrange(desc(abs(PC1)))
+}
+
+loadings_he   <- make_loading_tbl(he_out,   he_spec,   "Housing & Economic")
+loadings_lang <- make_loading_tbl(lang_out, lang_spec, "Language Access")
+
+bind_rows(loadings_he, loadings_lang) |>
+  mutate(across(where(is.numeric), ~ round(.x, 3))) |>
+  hvi_kable("Table 3 — How each variable contributes to the top PCs")
+```
+
+## Table 4 — Final HVI scores
+
+```{r tbl-hvi}
+scores |>
+  transmute(
+    Rank  = hvi_rank,
+    Tract = tract_short,
+    `Housing & Econ`  = score_cell(housing_econ_score),
+    `Language Access` = score_cell(language_score),
+    `Final HVI`       = score_cell(hvi_score),
+    `Dominant driver` = dominant_subindex
+  ) |>
+  hvi_kable(
+    "Table 4 — Sub-index and combined HVI scores (higher = more vulnerable)",
+    escape = FALSE
+  ) |>
+  kableExtra::column_spec(5, bold = TRUE, border_left = TRUE) |>
+  kableExtra::column_spec(1, width = "3em", color = "#4a7ca0", bold = TRUE)
+```
+
+## Table 5 — Indicator snapshot
+
+```{r tbl-indicators}
+pca_input |>
+  select(Tract = tract_short, all_of(kept_vars)) |>
+  left_join(scores |> select(tract_short, hvi_rank, hvi_score),
+            by = c("Tract" = "tract_short")) |>
+  arrange(hvi_rank) |>
+  select(Rank = hvi_rank, Tract, -hvi_score, everything()) |>
+  mutate(across(where(is.numeric), ~ round(.x, 3))) |>
+  hvi_kable("Table 5 — All indicators by tract (sorted by final HVI, highest vulnerability first)",
+            full_width = TRUE) |>
+  kableExtra::column_spec(1, color = "#4a7ca0", bold = TRUE) |>
+  kableExtra::scroll_box(width = "100%", height = "420px")
+```
+
+------------------------------------------------------------------------
+
+# 10. Maps
+
+```{r maps-join}
+mapped <- tract_geom |>
+  left_join(scores |> select(GEOID, housing_econ_score,
+                             language_score, hvi_score, tract_short),
+            by = "GEOID")
+```
+
+```{r map-helper}
+draw_choropleth <- function(sf_df, fill_col, title, subtitle,
+                            caption, label_col = "tract_short") {
+  ggplot(sf_df) +
+    geom_sf(aes(fill = .data[[fill_col]]),
+            color = "white", linewidth = 0.6) +
+    scale_fill_gradientn(
+      colors  = hvi_gradient,
+      name    = "Score",
+      labels  = label_number(accuracy = 1),
+      guide   = guide_colorbar(barwidth = 10, barheight = 0.7,
+                               title.position = "top")
+    ) +
+    ggrepel::geom_label_repel(
+  aes(geometry = geometry,
+      label = paste0(.data[[label_col]], "\n", round(.data[[fill_col]], 1))),
+  stat = "sf_coordinates",
+  size = 2.8, fill = "white", alpha = 0.85,
+  family = "Open Sans", color = pal$navy,
+  label.size = 0.2,
+  min.segment.length = 0,
+  max.overlaps = Inf
+) +
+    labs(title = title, subtitle = subtitle, caption = caption) +
+    theme_void(base_family = "Open Sans") +
+    theme(
+      plot.title    = element_text(family = "Exo 2", face = "bold",
+                                   size = 16, color = pal$navy),
+      plot.subtitle = element_text(family = "Open Sans",
+                                   size = 10, color = "grey35"),
+      plot.caption  = element_text(family = "Open Sans",
+                                   size = 8, color = "grey45",
+                                   hjust = 0),
+      legend.position   = "bottom",
+      legend.title      = element_text(family = "Exo 2",
+                                       size = 9, color = pal$navy),
+      legend.text       = element_text(size = 8),
+      plot.margin       = margin(12, 12, 12, 12)
+    )
+}
+```
+
+## Map 1 — Final Heat Vulnerability Index
+
+```{r map-final}
+draw_choropleth(
+  mapped, "hvi_score",
+  title    = "SEAMAAC Heat Vulnerability Index",
+  subtitle = paste0(study_area$acs_year - 4, "–", study_area$acs_year,
+                    " ACS 5-Year · ", nrow(scores), " census tracts"),
+  caption  = "Higher scores indicate greater heat vulnerability.\nCombines a Housing & Economic sub-index with a Language Access sub-index."
+)
+```
+
+## Map 2 — Housing & Economic sub-index
+
+```{r map-housing}
+draw_choropleth(
+  mapped, "housing_econ_score",
+  title    = "Housing & Economic Sub-Index",
+  subtitle = "Drivers: cost burden, crowding, housing quality, poverty, income",
+  caption  = "Higher scores indicate greater housing and economic stress."
+)
+```
+
+## Map 3 — Language Access sub-index
+
+```{r map-language}
+draw_choropleth(
+  mapped, "language_score",
+  title    = "Language Access Sub-Index",
+  subtitle = "Drivers: Limited English Proficiency and linguistic isolation",
+  caption  = "Higher scores indicate greater language-access barriers during heat events."
+)
+```
+
+------------------------------------------------------------------------
+
+# 11. Results and interpretation
+
+```{r analysis-helpers, include = FALSE}
+# Utilities that make the narrative paragraphs below programmatic.
+
+# Which two variables most strongly pull a tract up relative to the others?
+# We compute a z-score for each indicator, flip by direction, and return the
+# indicators where this tract is most above average.
+top_drivers_for_tract <- function(tract_code_val, n = 2) {
+  tract_row <- pca_input |> filter(tract_code == tract_code_val)
+  if (nrow(tract_row) == 0) return(character(0))
+  z <- sapply(active_spec$friendly_name, function(v) {
+    x  <- pca_input[[v]]
+    mu <- mean(x, na.rm = TRUE)
+    sd <- stats::sd(x, na.rm = TRUE)
+    if (is.na(sd) || sd == 0) return(NA_real_)
+    direction <- active_spec$direction[active_spec$friendly_name == v]
+    ((tract_row[[v]] - mu) / sd) * direction
+  })
+  z <- sort(z, decreasing = TRUE, na.last = NA)
+  idx   <- head(names(z), n)
+  active_spec$label[match(idx, active_spec$friendly_name)]
+}
+
+# Pearson correlation between housing and language scores (how concordant are
+# the two sub-indices?).
+he_la_corr <- suppressWarnings(
+  cor(scores$housing_econ_score, scores$language_score,
+      use = "complete.obs")
+)
+
+scores_for_text <- scores |>
+  arrange(desc(hvi_score)) |>
+  mutate(rank = row_number())
+```
+
+## 11.1 Which tracts are most vulnerable?
+
+```{r top-bottom-narrative, results = "asis"}
+top_tract    <- scores_for_text |> slice(1)
+bottom_tract <- scores_for_text |> slice(n())
+
+top_drivers    <- top_drivers_for_tract(top_tract$tract_code, 2)
+bottom_drivers <- top_drivers_for_tract(bottom_tract$tract_code, 2)
+
+cat(sprintf(
+"The census tract scoring highest on the combined HVI is **%s** (HVI = %.1f, with 0 being the rough average). The two indicators pulling this tract up the most are *%s* and *%s*. ",
+  top_tract$tract_short, top_tract$hvi_score,
+  top_drivers[1], top_drivers[2]
+))
+
+cat(sprintf(
+"The tract scoring lowest is **%s** (HVI = %.1f). Its lower score reflects relatively better conditions on *%s* and *%s* compared with the rest of the study area. ",
+  bottom_tract$tract_short, bottom_tract$hvi_score,
+  bottom_drivers[1], bottom_drivers[2]
+))
+
+cat(sprintf(
+"The full ranking (highest to lowest) is: **%s**.",
+  paste(scores_for_text$tract_short, collapse = " > ")
+))
+```
+
+## 11.2 Do housing stress and language access point to the same tracts?
+
+```{r concordance-narrative, results = "asis"}
+corr_text <- case_when(
+  is.na(he_la_corr)         ~ "undefined (one sub-index is constant)",
+  abs(he_la_corr) < 0.3     ~ sprintf("weak (r = %.2f)",     he_la_corr),
+  abs(he_la_corr) < 0.7     ~ sprintf("moderate (r = %.2f)", he_la_corr),
+  TRUE                      ~ sprintf("strong (r = %.2f)",   he_la_corr)
+)
+
+interpretation <- if (is.na(he_la_corr)) {
+  "we cannot compare the two sub-indices directly."
+} else if (he_la_corr > 0.7) {
+  "the same tracts that are most housing-stressed also have the greatest language-access barriers — so the final map closely resembles either sub-index map on its own."
+} else if (he_la_corr > 0.3) {
+  "the two sub-indices agree on most tracts but diverge on some. The divergent tracts are where the combined index adds the most value relative to housing-only measures."
+} else if (he_la_corr > -0.3) {
+  "the two sub-indices capture largely different signals across tracts. The combined HVI is a genuine blend of both, and divergent tracts stand out clearly."
+} else {
+  "the two sub-indices trend in opposite directions — some of the housing-stressed tracts are actually better off on language access, and vice versa. This is a strong case for reporting them separately."
+}
+
+cat(sprintf(
+"The correlation between the Housing & Economic and Language Access sub-indices is **%s**, meaning %s",
+  corr_text, interpretation
+))
+```
+
+```{r concordance-table}
+scores |>
+  transmute(
+    Rank             = hvi_rank,
+    Tract            = tract_short,
+    `Housing & Econ` = score_cell(housing_econ_score),
+    `Language Access`= score_cell(language_score),
+    `Difference (H − L)` = round(housing_econ_score - language_score, 1),
+    `Dominant driver`= dominant_subindex,
+    `Final HVI`      = score_cell(hvi_score)
+  ) |>
+  arrange(Rank) |>
+  hvi_kable(
+    "Table 6 — Sub-index comparison. A large positive difference means housing stress is dominant; negative means language barriers are dominant.",
+    escape = FALSE
+  ) |>
+  kableExtra::column_spec(1, color = "#4a7ca0", bold = TRUE) |>
+  kableExtra::column_spec(7, bold = TRUE, border_left = TRUE)
+```
+
+## 11.3 Tract-by-tract summary
+
+```{r per-tract-summary, results = "asis"}
+for (i in seq_len(nrow(scores_for_text))) {
+  t  <- scores_for_text[i, ]
+  td <- top_drivers_for_tract(t$tract_code, 2)
+  dom_text <- case_when(
+    t$dominant_subindex == "housing/economic" ~
+      "Housing and economic stress is the primary driver here.",
+    t$dominant_subindex == "language access"  ~
+      "Language-access barriers are the primary driver here.",
+    t$dominant_subindex == "balanced"         ~
+      "Housing and language dimensions contribute roughly equally.",
+    TRUE ~ ""
+  )
+  cat(sprintf(
+"- **%s (Rank %d, HVI %.1f)** — H&E %.1f · Lang %.1f. %s Strongest indicators: *%s*; *%s*.\n\n",
+    t$tract_short, t$rank, t$hvi_score,
+    t$housing_econ_score, t$language_score,
+    dom_text, td[1], td[2]
+  ))
+}
+```
+
+:::: callout
+::: callout-title
+How to read this
+:::
+
+"Rank" orders tracts from most to least heat-vulnerable in this study area. "H&E" is the housing & economic sub-index and "Lang" is the language access sub-index. The "strongest indicators" for each tract are the variables where that tract sits farthest above the local average (after flipping direction so that higher always means more vulnerable). They explain *why* the tract scored where it did.
+::::
+
+------------------------------------------------------------------------
+
+# 12. What this index adds beyond Philadelphia's existing HVI
+
+The Philadelphia city-wide HVI focuses primarily on demographic and surface-temperature factors. The index in this report is designed to complement it with indicators especially relevant to SEAMAAC's community:
+
+-   **Language access.** LEP population share and linguistic isolation at the household level — critical for outreach, cooling-center awareness, and emergency communications.
+-   **Household-level rent burden.** Share of renters paying **50% or more** of income on rent (severe cost burden), which strains the ability to afford utilities including air conditioning.
+-   **Occupants per room.** Crowding measured properly (not just average household size) — a stronger signal of heat stress in housing.
+-   **Heating / housing infrastructure gaps.** Share of units with no heating fuel and mobile-home / non-standard structures.
+-   **Housing instability.** Share of recent movers, who are more likely to be in unstable situations and less likely to know local cooling resources.
+
+------------------------------------------------------------------------
+
+# 13. Limitations
+
+-   **Small n.** With only `r nrow(scores)` tracts, PCA is sensitive; use these scores as a relative ranking for planning, not as precise estimates.
+-   **AC not measured at the tract level.** The ACS does not ask about air conditioning at tract resolution, so direct cooling-equipment data is unavailable.
+-   **ACS 5-year estimates are averaged** over five years; they can mask rapid neighborhood change.
+-   **Imputation.** Any missing tract values are replaced with the column median. Table 1 reports how many values were imputed per variable.
+
+------------------------------------------------------------------------
+
+# 14. Reproducibility footer
+
+```{r session-info}
+sessionInfo()
+```
